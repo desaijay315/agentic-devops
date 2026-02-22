@@ -1,0 +1,50 @@
+server:
+  port: 8082
+
+spring:
+  application:
+    name: healing-engine
+  datasource:
+    url: jdbc:postgresql://${POSTGRES_HOST:localhost}:${POSTGRES_PORT:5432}/${POSTGRES_DB:infraflow}
+    username: ${POSTGRES_USER:infraflow}
+    password: ${POSTGRES_PASSWORD:infraflow123}
+  jpa:
+    hibernate:
+      ddl-auto: validate
+    open-in-view: false
+  flyway:
+    enabled: true
+    locations: classpath:db/migration
+  kafka:
+    bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS:localhost:9092}
+    consumer:
+      group-id: healing-engine
+      auto-offset-reset: earliest
+      key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      value-deserializer: org.springframework.kafka.support.serializer.JsonDeserializer
+      properties:
+        spring.json.trusted.packages: com.infraflow.*
+    producer:
+      key-serializer: org.apache.kafka.common.serialization.StringSerializer
+      value-serializer: org.springframework.kafka.support.serializer.JsonSerializer
+
+eureka:
+  client:
+    service-url:
+      defaultZone: http://localhost:8761/eureka/
+
+infraflow:
+  kafka:
+    topic:
+      pipeline-events: pipeline.events.raw
+      healing-events: pipeline.events.healed
+  healing:
+    confidence-threshold: ${HEALING_CONFIDENCE_THRESHOLD:0.75}
+    auto-apply: ${HEALING_AUTO_APPLY:false}
+  llm:
+    provider: ${LLM_PROVIDER:claude}
+  github:
+    token: ${GITHUB_TOKEN:}
+  anthropic:
+    api-key: ${ANTHROPIC_API_KEY:}
+    model: claude-sonnet-4-20250514

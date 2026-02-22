@@ -1,0 +1,15 @@
+package com.infraflow.common.enums;
+
+public enum AuditAction {
+    FAILURE_DETECTED,
+    CLASSIFIED,
+    FIX_GENERATED,
+    FIX_APPROVED,
+    FIX_REJECTED,
+    BRANCH_CREATED,
+    FIX_COMMITTED,
+    PIPELINE_RETRIED,
+    PIPELINE_PASSED,
+    PIPELINE_FAILED_AGAIN,
+    ESCALATED
+}
