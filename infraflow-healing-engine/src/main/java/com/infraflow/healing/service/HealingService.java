@@ -46,8 +46,7 @@ public class HealingService {
     private String healingEventsTopic;
 
     @Transactional
-    public void initiateHealing(Map<String, Object> eventData) {
-        // 1. Persist the pipeline event
+    public PipelineEvent persistPipelineEvent(Map<String, Object> eventData) {
         PipelineEvent pipelineEvent = PipelineEvent.builder()
                 .repoUrl((String) eventData.get("repoUrl"))
                 .repoName((String) eventData.get("repoName"))
@@ -59,7 +58,13 @@ public class HealingService {
                         ? ((Number) eventData.get("workflowRunId")).longValue() : null)
                 .workflowName((String) eventData.get("workflowName"))
                 .build();
-        pipelineEvent = eventRepository.save(pipelineEvent);
+        return eventRepository.save(pipelineEvent);
+    }
+
+    public void initiateHealing(Map<String, Object> eventData) {
+        // 1. Persist the pipeline event (separate transaction — always committed)
+        PipelineEvent pipelineEvent = persistPipelineEvent(eventData);
+        log.info("Persisted pipeline event: id={}, repo={}", pipelineEvent.getId(), pipelineEvent.getRepoName());
 
         // 2. Classify the failure
         String logs = (String) eventData.getOrDefault("rawLogs", "");
@@ -67,6 +72,56 @@ public class HealingService {
         log.info("Classified failure as: {}", failureType);
 
         // 3. Create healing session
+        HealingSession session = createHealingSession(pipelineEvent, failureType);
+
+        // 4. Attempt LLM fix generation
+        try {
+            HealingRequest request = new HealingRequest(
+                    logs,
+                    "Java",
+                    "Maven",
+                    failureType.name(),
+                    null, null, "ci",
+                    null, null, null, null
+            );
+
+            HealingPlanResponse plan = healingLLM.generateFix(request);
+
+            // 5. Update session with the fix plan
+            updateSessionWithPlan(session, plan);
+
+            audit(session, AuditAction.FIX_GENERATED, "AI",
+                    "Confidence: " + plan.confidenceScore() + " | Type: " + plan.fixType());
+
+            // 6. Decision: auto-apply, require approval, or escalate
+            if ("ESCALATE".equals(plan.fixType()) || plan.confidenceScore() < confidenceThreshold) {
+                session.setStatus(HealingStatus.ESCALATED);
+                audit(session, AuditAction.ESCALATED, "AI",
+                        "Confidence " + plan.confidenceScore() + " below threshold " + confidenceThreshold);
+                pipelineEvent.setStatus(PipelineStatus.ESCALATED);
+            } else if (autoApply) {
+                session.setStatus(HealingStatus.APPLYING);
+                sessionRepository.save(session);
+                applyFix(session, plan);
+                return;
+            } else {
+                session.setStatus(HealingStatus.PENDING_APPROVAL);
+            }
+        } catch (Exception e) {
+            log.error("LLM fix generation failed — escalating session {}", session.getId(), e);
+            session.setStatus(HealingStatus.ESCALATED);
+            session.setFailureSummary("AI analysis failed: " + e.getMessage());
+            audit(session, AuditAction.ESCALATED, "AI", "LLM call failed: " + e.getMessage());
+            pipelineEvent.setStatus(PipelineStatus.ESCALATED);
+        }
+
+        sessionRepository.save(session);
+        eventRepository.save(pipelineEvent);
+        publishHealingEvent(session, pipelineEvent);
+    }
+
+    @Transactional
+    public HealingSession createHealingSession(PipelineEvent pipelineEvent, FailureType failureType) {
         HealingSession session = HealingSession.builder()
                 .pipelineEvent(pipelineEvent)
                 .failureType(failureType)
@@ -75,20 +130,10 @@ public class HealingService {
         session = sessionRepository.save(session);
         audit(session, AuditAction.FAILURE_DETECTED, "AI", "Pipeline failure detected");
         audit(session, AuditAction.CLASSIFIED, "AI", "Classified as " + failureType);
+        return session;
+    }
 
-        // 4. Call LLM for fix generation
-        HealingRequest request = new HealingRequest(
-                logs,
-                "Java",
-                "Maven",
-                failureType.name(),
-                null, null, "ci",
-                null, null, null, null
-        );
-
-        HealingPlanResponse plan = healingLLM.generateFix(request);
-
-        // 5. Update session with the fix plan
+    private void updateSessionWithPlan(HealingSession session, HealingPlanResponse plan) {
         try {
             session.setFailureSummary(plan.failureSummary());
             session.setRootCause(plan.rootCause());
@@ -99,28 +144,6 @@ public class HealingService {
         } catch (Exception e) {
             log.error("Failed to serialize fix plan", e);
         }
-
-        audit(session, AuditAction.FIX_GENERATED, "AI",
-                "Confidence: " + plan.confidenceScore() + " | Type: " + plan.fixType());
-
-        // 6. Decision: auto-apply, require approval, or escalate
-        if ("ESCALATE".equals(plan.fixType()) || plan.confidenceScore() < confidenceThreshold) {
-            session.setStatus(HealingStatus.ESCALATED);
-            audit(session, AuditAction.ESCALATED, "AI",
-                    "Confidence " + plan.confidenceScore() + " below threshold " + confidenceThreshold);
-            pipelineEvent.setStatus(PipelineStatus.ESCALATED);
-        } else if (autoApply) {
-            session.setStatus(HealingStatus.APPLYING);
-            sessionRepository.save(session);
-            applyFix(session, plan);
-            return;
-        } else {
-            session.setStatus(HealingStatus.PENDING_APPROVAL);
-        }
-
-        sessionRepository.save(session);
-        eventRepository.save(pipelineEvent);
-        publishHealingEvent(session, pipelineEvent);
     }
 
     @Transactional

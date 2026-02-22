@@ -8,6 +8,7 @@ import com.infraflow.dashboard.repository.DashboardHealingSessionRepository;
 import com.infraflow.dashboard.repository.DashboardPipelineEventRepository;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 
 import java.util.HashMap;
 import java.util.List;
@@ -16,6 +17,7 @@ import java.util.stream.Collectors;
 
 @Service
 @RequiredArgsConstructor
+@Transactional(readOnly = true)
 public class DashboardService {
 
     private final DashboardPipelineEventRepository eventRepository;
@@ -64,7 +66,7 @@ public class DashboardService {
     private Map<String, Object> toSessionMap(HealingSession s) {
         Map<String, Object> map = new HashMap<>();
         map.put("id", s.getId());
-        map.put("failureType", s.getFailureType().name());
+        map.put("failureType", s.getFailureType() != null ? s.getFailureType().name() : null);
         map.put("status", s.getStatus().name());
         map.put("failureSummary", s.getFailureSummary());
         map.put("fixExplanation", s.getFixExplanation());
