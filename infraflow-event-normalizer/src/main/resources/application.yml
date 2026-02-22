@@ -21,3 +21,14 @@ infraflow:
       pipeline-events: pipeline.events.raw
   github:
     webhook-secret: ${GITHUB_WEBHOOK_SECRET:}
+
+# Actuator
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics,env,loggers
+  endpoint:
+    health:
+      show-details: always
+

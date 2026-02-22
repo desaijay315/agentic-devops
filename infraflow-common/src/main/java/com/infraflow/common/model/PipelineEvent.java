@@ -38,6 +38,8 @@ public class PipelineEvent {
     @Column(columnDefinition = "TEXT")
     private String rawLogs;
 
+    private Long userId;
+
     private Long workflowRunId;
 
     private String workflowName;

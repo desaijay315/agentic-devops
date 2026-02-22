@@ -34,3 +34,8 @@ out/
 
 # Docker
 *.log
+
+# AI Memory Bank & Copilot Instructions
+memory-bank/
+.github/copilot-instructions.md
+

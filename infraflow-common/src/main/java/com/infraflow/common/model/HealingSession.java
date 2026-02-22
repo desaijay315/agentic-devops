@@ -50,6 +50,16 @@ public class HealingSession {
 
     private String fixCommitSha;
 
+    @Builder.Default
+    private Integer attemptNumber = 1;
+
+    @ManyToOne(fetch = FetchType.LAZY)
+    @JoinColumn(name = "parent_session_id")
+    private HealingSession parentSession;
+
+    @Column(columnDefinition = "TEXT")
+    private String userFeedback;
+
     private Instant createdAt;
 
     private Instant resolvedAt;

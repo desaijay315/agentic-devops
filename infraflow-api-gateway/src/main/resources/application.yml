@@ -4,6 +4,34 @@ server:
 spring:
   application:
     name: api-gateway
+  profiles:
+    active: ${SPRING_PROFILES_ACTIVE:local}
+
+  # Redis session storage for OAuth2 access tokens
+  data:
+    redis:
+      host: ${REDIS_HOST:localhost}
+      port: ${REDIS_PORT:6379}
+
+  session:
+    store-type: redis
+    timeout: 7200  # 2 hours session TTL
+    redis:
+      namespace: infraflow:session
+
+  security:
+    oauth2:
+      client:
+        registration:
+          github:
+            client-id: ${GITHUB_OAUTH_CLIENT_ID:}
+            client-secret: ${GITHUB_OAUTH_CLIENT_SECRET:}
+            scope: read:user,repo
+        provider:
+          github:
+            user-info-uri: https://api.github.com/user
+            user-name-attribute: login
+
   cloud:
     gateway:
       routes:
@@ -17,10 +45,25 @@ spring:
           predicates:
             - Path=/api/healing/**
 
+        - id: user-service
+          uri: lb://dashboard-backend
+          predicates:
+            - Path=/api/user/**
+
         - id: dashboard-backend
           uri: lb://dashboard-backend
           predicates:
             - Path=/api/dashboard/**, /ws/**
+
+        - id: security-service
+          uri: lb://dashboard-backend
+          predicates:
+            - Path=/api/security/**
+
+        - id: knowledge-base
+          uri: lb://healing-engine
+          predicates:
+            - Path=/api/knowledge/**
 
       default-filters:
         - DedupeResponseHeader=Access-Control-Allow-Origin Access-Control-Allow-Credentials
@@ -37,3 +80,16 @@ eureka:
   client:
     service-url:
       defaultZone: http://localhost:8761/eureka/
+
+# Actuator
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics,env,loggers,gateway
+  endpoint:
+    health:
+      show-details: always
+    gateway:
+      enabled: true
+

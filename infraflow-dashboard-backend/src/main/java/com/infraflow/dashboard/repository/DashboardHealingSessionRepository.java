@@ -11,6 +11,9 @@ public interface DashboardHealingSessionRepository extends JpaRepository<Healing
 
     List<HealingSession> findTop20ByOrderByCreatedAtDesc();
 
+    @Query("SELECT s FROM HealingSession s JOIN s.pipelineEvent e WHERE e.repoName = ?1 ORDER BY s.createdAt DESC")
+    List<HealingSession> findByRepoName(String repoName);
+
     long countByStatus(HealingStatus status);
 
     @Query(value = "SELECT AVG(EXTRACT(EPOCH FROM (resolved_at - created_at))) FROM healing_sessions WHERE resolved_at IS NOT NULL", nativeQuery = true)

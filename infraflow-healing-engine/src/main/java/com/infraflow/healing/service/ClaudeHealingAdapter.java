@@ -98,6 +98,71 @@ public class ClaudeHealingAdapter implements HealingLLMPort {
         }
     }
 
+    @Override
+    public HealingPlanResponse regenerateFix(HealingRequest request, String previousFixJson, String feedback) {
+        if (demoMode) {
+            log.info("Demo mode — regenerating fix for {} with feedback: {}",
+                    request.failureType(), feedback != null ? feedback : "(none)");
+            return generateSmartDemoResponse(request);
+        }
+
+        String userPrompt = promptRouter.route(request);
+
+        // Append previous fix context + developer feedback
+        StringBuilder enhanced = new StringBuilder(userPrompt);
+        enhanced.append("\n\n--- PREVIOUS FIX ATTEMPT (REJECTED BY DEVELOPER) ---\n");
+        if (previousFixJson != null) {
+            enhanced.append(previousFixJson.length() > 2000
+                    ? previousFixJson.substring(0, 2000) + "...(truncated)"
+                    : previousFixJson);
+        }
+        if (feedback != null && !feedback.isBlank()) {
+            enhanced.append("\n\n--- DEVELOPER FEEDBACK ---\n");
+            enhanced.append(feedback);
+            enhanced.append("\n\nGenerate a DIFFERENT fix approach that addresses the developer's feedback above.");
+        } else {
+            enhanced.append("\n\nGenerate a DIFFERENT fix approach from the one above.");
+        }
+
+        String systemPrompt = promptRouter.getSystemPrompt();
+        log.info("Calling Claude API for re-code of {} failure", request.failureType());
+
+        try {
+            Map<String, Object> body = Map.of(
+                    "model", model,
+                    "max_tokens", 4096,
+                    "system", systemPrompt,
+                    "messages", List.of(
+                            Map.of("role", "user", "content", enhanced.toString())
+                    )
+            );
+
+            String response = webClient.post()
+                    .uri("/v1/messages")
+                    .header("x-api-key", apiKey)
+                    .header("anthropic-version", "2023-06-01")
+                    .contentType(MediaType.APPLICATION_JSON)
+                    .bodyValue(body)
+                    .retrieve()
+                    .bodyToMono(String.class)
+                    .block();
+
+            var responseNode = objectMapper.readTree(response);
+            String content = responseNode.path("content").get(0).path("text").asText();
+
+            content = content.strip();
+            if (content.startsWith("```json")) content = content.substring(7);
+            if (content.startsWith("```")) content = content.substring(3);
+            if (content.endsWith("```")) content = content.substring(0, content.length() - 3);
+
+            return objectMapper.readValue(content.strip(), HealingPlanResponse.class);
+
+        } catch (Exception e) {
+            log.error("Claude re-code API call failed — falling back to smart analysis", e);
+            return generateSmartDemoResponse(request);
+        }
+    }
+
     /**
      * Smart demo response generator that analyzes CI logs using regex patterns
      * and produces realistic AI-quality healing plans. Used in demo mode or as

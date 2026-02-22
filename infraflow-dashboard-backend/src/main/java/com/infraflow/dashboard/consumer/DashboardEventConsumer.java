@@ -27,4 +27,11 @@ public class DashboardEventConsumer {
                 event.get("sessionId"), event.get("healingStatus"));
         messagingTemplate.convertAndSend("/topic/healing-events", event);
     }
+
+    @KafkaListener(topics = "${infraflow.kafka.topic.security-events}", groupId = "dashboard-backend")
+    public void consumeSecurityEvent(Map<String, Object> event) {
+        log.info("Dashboard received security event: repo={}, severity={}",
+                event.get("repoName"), event.get("severity"));
+        messagingTemplate.convertAndSend("/topic/security-events", event);
+    }
 }

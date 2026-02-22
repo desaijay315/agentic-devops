@@ -2,8 +2,9 @@
 
 import { useEffect, useState } from 'react';
 import { useWebSocket } from '@/lib/WebSocketProvider';
-import { fetchDashboardStats, fetchPipelineEvents, fetchHealingSessions } from '@/lib/api';
+import { fetchDashboardStats, fetchPipelineEvents, fetchHealingSessions, fetchKnowledgeBaseStats } from '@/lib/api';
 import StatsCards from '@/components/StatsCards';
+import KnowledgeBaseStats from '@/components/KnowledgeBaseStats';
 import PipelineFeed from '@/components/PipelineFeed';
 import HealingLog from '@/components/HealingLog';
 import ConnectionIndicator from '@/components/ConnectionIndicator';
@@ -13,6 +14,7 @@ export default function DashboardPage() {
     useWebSocket();
 
   const [stats, setStats] = useState<any>(null);
+  const [kbStats, setKbStats] = useState<{ totalPatterns: number; totalFixes: number; cacheHitsToday: number } | null>(null);
   const [events, setEvents] = useState<any[]>([]);
   const [sessions, setSessions] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
@@ -23,6 +25,7 @@ export default function DashboardPage() {
       fetchDashboardStats().then(setStats),
       fetchPipelineEvents().then(setEvents),
       fetchHealingSessions().then(setSessions),
+      fetchKnowledgeBaseStats().then(setKbStats).catch(console.error),
     ]).finally(() => setLoading(false));
   }, []);
 
@@ -34,6 +37,7 @@ export default function DashboardPage() {
   useEffect(() => {
     const interval = setInterval(() => {
       fetchDashboardStats().then(setStats).catch(console.error);
+      fetchKnowledgeBaseStats().then(setKbStats).catch(console.error);
     }, 10000);
     return () => clearInterval(interval);
   }, []);
@@ -51,6 +55,8 @@ export default function DashboardPage() {
       </div>
 
       <StatsCards stats={stats} />
+
+      <KnowledgeBaseStats stats={kbStats} />
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         <div>

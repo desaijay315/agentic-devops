@@ -23,6 +23,8 @@ public class DashboardService {
     private final DashboardPipelineEventRepository eventRepository;
     private final DashboardHealingSessionRepository sessionRepository;
 
+    // ── Global queries ──────────────────────────────────
+
     public List<Map<String, Object>> getRecentPipelineEvents() {
         return eventRepository.findTop20ByOrderByCreatedAtDesc().stream()
                 .map(this::toEventMap)
@@ -50,6 +52,38 @@ public class DashboardService {
         return stats;
     }
 
+    // ── Repo-filtered queries ───────────────────────────
+
+    public List<Map<String, Object>> getPipelineEventsByRepo(String repoName, String branch) {
+        List<PipelineEvent> events;
+        if (branch != null && !branch.isBlank()) {
+            events = eventRepository.findTop50ByRepoNameAndBranchOrderByCreatedAtDesc(repoName, branch);
+        } else {
+            events = eventRepository.findTop50ByRepoNameOrderByCreatedAtDesc(repoName);
+        }
+        return events.stream().map(this::toEventMap).collect(Collectors.toList());
+    }
+
+    public List<Map<String, Object>> getHealingSessionsByRepo(String repoName) {
+        return sessionRepository.findByRepoName(repoName).stream()
+                .map(this::toSessionMap)
+                .collect(Collectors.toList());
+    }
+
+    public Map<String, Object> getStatsByRepo(String repoName) {
+        Map<String, Object> stats = new HashMap<>();
+        stats.put("totalPipelines", eventRepository.countByRepoName(repoName));
+        stats.put("failedPipelines", eventRepository.countByRepoNameAndStatus(repoName, PipelineStatus.FAILED));
+        stats.put("healedPipelines", eventRepository.countByRepoNameAndStatus(repoName, PipelineStatus.HEALED));
+        return stats;
+    }
+
+    public List<String> getBranches(String repoName) {
+        return eventRepository.findDistinctBranchesByRepoName(repoName);
+    }
+
+    // ── Mappers ─────────────────────────────────────────
+
     private Map<String, Object> toEventMap(PipelineEvent e) {
         Map<String, Object> map = new HashMap<>();
         map.put("id", e.getId());
@@ -72,10 +106,12 @@ public class DashboardService {
         map.put("fixExplanation", s.getFixExplanation());
         map.put("confidenceScore", s.getConfidenceScore());
         map.put("fixBranch", s.getFixBranch());
+        map.put("attemptNumber", s.getAttemptNumber());
         map.put("createdAt", s.getCreatedAt() != null ? s.getCreatedAt().toString() : null);
         map.put("resolvedAt", s.getResolvedAt() != null ? s.getResolvedAt().toString() : null);
         if (s.getPipelineEvent() != null) {
             map.put("repoName", s.getPipelineEvent().getRepoName());
+            map.put("branch", s.getPipelineEvent().getBranch());
         }
         return map;
     }
