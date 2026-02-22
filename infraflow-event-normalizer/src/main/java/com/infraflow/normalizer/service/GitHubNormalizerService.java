@@ -13,6 +13,7 @@ import javax.crypto.Mac;
 import javax.crypto.spec.SecretKeySpec;
 import java.nio.charset.StandardCharsets;
 import java.time.Instant;
+import java.util.HashMap;
 import java.util.HexFormat;
 import java.util.Map;
 
@@ -49,18 +50,24 @@ public class GitHubNormalizerService {
 
             PipelineStatus pipelineStatus = mapStatus(status, conclusion);
 
-            Map<String, Object> event = Map.ofEntries(
-                    Map.entry("repoUrl", workflowRun.path("repository").path("html_url").asText("")),
-                    Map.entry("repoName", workflowRun.path("repository").path("full_name").asText("")),
-                    Map.entry("branch", workflowRun.path("head_branch").asText("")),
-                    Map.entry("commitSha", workflowRun.path("head_sha").asText("")),
-                    Map.entry("provider", "GITHUB"),
-                    Map.entry("status", pipelineStatus.name()),
-                    Map.entry("workflowRunId", workflowRun.path("id").asLong()),
-                    Map.entry("workflowName", workflowRun.path("name").asText("")),
-                    Map.entry("triggeredAt", workflowRun.path("created_at").asText(Instant.now().toString())),
-                    Map.entry("completedAt", workflowRun.path("updated_at").asText(Instant.now().toString()))
-            );
+            Map<String, Object> event = new HashMap<>();
+            event.put("repoUrl", workflowRun.path("repository").path("html_url").asText(""));
+            event.put("repoName", workflowRun.path("repository").path("full_name").asText(""));
+            event.put("branch", workflowRun.path("head_branch").asText(""));
+            event.put("commitSha", workflowRun.path("head_sha").asText(""));
+            event.put("provider", "GITHUB");
+            event.put("status", pipelineStatus.name());
+            event.put("workflowRunId", workflowRun.path("id").asLong());
+            event.put("workflowName", workflowRun.path("name").asText(""));
+            event.put("triggeredAt", workflowRun.path("created_at").asText(Instant.now().toString()));
+            event.put("completedAt", workflowRun.path("updated_at").asText(Instant.now().toString()));
+
+            // Pass raw logs from webhook payload for AI analysis
+            String rawLogs = root.path("rawLogs").asText("");
+            if (!rawLogs.isBlank()) {
+                event.put("rawLogs", rawLogs);
+                log.info("Included {} chars of raw logs for AI analysis", rawLogs.length());
+            }
 
             String key = event.get("repoName") + ":" + event.get("commitSha");
             kafkaTemplate.send(pipelineEventsTopic, key, event);

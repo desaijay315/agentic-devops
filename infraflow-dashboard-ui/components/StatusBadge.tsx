@@ -22,15 +22,16 @@ const statusStyles: Record<string, string> = {
   REJECTED: 'bg-gray-200 text-gray-500 dark:bg-gray-700 dark:text-gray-400',
 };
 
-export default function StatusBadge({ status }: { status: string }) {
+export default function StatusBadge({ status }: { status?: string | null }) {
+  const label = status ?? 'UNKNOWN';
   return (
     <span
       className={clsx(
         'inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium',
-        statusStyles[status] || 'bg-gray-200 text-gray-600 dark:bg-gray-700 dark:text-gray-300'
+        statusStyles[label] || 'bg-gray-200 text-gray-600 dark:bg-gray-700 dark:text-gray-300'
       )}
     >
-      {status.replace(/_/g, ' ')}
+      {label.replace(/_/g, ' ')}
     </span>
   );
 }

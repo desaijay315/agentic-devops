@@ -210,7 +210,19 @@ mvn spring-boot:run
 
    **Step F — Publish:** Sends healing event to Kafka topic `pipeline.events.healed` for dashboard
 
-**Without an API key:** The LLM call fails gracefully — the session is saved as `ESCALATED` with the error message. The pipeline event and healing session still appear on the dashboard.
+**Without an API key (or no credits):** The healing engine has a built-in **smart analysis fallback** that uses regex-based log analysis to produce realistic AI-quality fix recommendations. This kicks in automatically when:
+- No API key is configured
+- The API key has no credits
+- The Anthropic API is unreachable
+
+**Demo Mode:** You can also force the smart analysis by setting `HEALING_DEMO_MODE=true`:
+```bash
+# Windows:
+set HEALING_DEMO_MODE=true
+# Mac/Linux:
+export HEALING_DEMO_MODE=true
+```
+Demo mode analyzes build logs using pattern matching and produces categorized responses with confidence scores, just like the real Claude API would. Perfect for hackathon demos and development.
 
 **Flyway migrations:** On first startup, Flyway runs `V1__init_schema.sql` which creates 3 tables:
 - `pipeline_events` — Every webhook event received
@@ -273,40 +285,61 @@ npm run dev
 **Simulate a webhook** (no real GitHub needed):
 
 ```bash
-curl -X POST http://localhost:8081/api/webhooks/github \
+# Compilation failure example
+curl -X POST http://localhost:8080/api/webhooks/github \
   -H "Content-Type: application/json" \
   -H "X-GitHub-Event: workflow_run" \
   -d '{
     "action": "completed",
     "workflow_run": {
       "id": 99999,
-      "name": "CI Build",
-      "head_branch": "main",
-      "head_sha": "abc123def456",
+      "name": "CI Build & Test",
       "status": "completed",
       "conclusion": "failure",
-      "html_url": "https://github.com/your-org/your-repo/actions/runs/99999",
+      "head_branch": "feature/user-auth",
+      "head_sha": "abc123def456",
+      "created_at": "2026-01-01T10:00:00Z",
+      "updated_at": "2026-01-01T10:05:00Z",
       "repository": {
         "full_name": "your-org/your-repo",
         "html_url": "https://github.com/your-org/your-repo"
-      },
-      "head_commit": { "message": "fix: broken build" }
+      }
     },
     "repository": {
       "full_name": "your-org/your-repo",
       "html_url": "https://github.com/your-org/your-repo"
-    }
+    },
+    "rawLogs": "[ERROR] COMPILATION ERROR\n[ERROR] /src/main/java/com/example/UserService.java:[45,32] error: cannot find symbol\n  symbol:   method getUserById(Long id)\n  location: class UserRepository\n[ERROR] /src/main/java/com/example/UserController.java:[28,15] error: incompatible types: Optional<User> cannot be converted to User\n[INFO] BUILD FAILURE"
   }'
 ```
+
+> **Important:** The `workflow_run` object MUST include `"status": "completed"` — without it, the normalizer maps the event as `QUEUED` and the healing engine skips it. The `rawLogs` field contains the CI build output for AI analysis.
 
 **Expected response:** `{"status":"accepted"}`
 
 **What happens next:**
-1. Event appears in Pipeline Feed within 1-2 seconds (via WebSocket)
-2. Healing Engine classifies the failure and creates a healing session
-3. If ANTHROPIC_API_KEY is set — Claude generates a fix with confidence score
-4. Session appears in Healing Activity with AI diagnosis and proposed fix
-5. Stats cards update on next refresh (every 10 seconds)
+1. Event Normalizer parses the webhook, extracts rawLogs, publishes to Kafka
+2. Healing Engine consumes event, classifies as `BUILD_COMPILE`
+3. Claude AI (or demo fallback) generates a fix plan with confidence score
+4. Event appears in Pipeline Feed within 1-2 seconds (via WebSocket)
+5. Session appears in Healing Activity with AI diagnosis and proposed fix
+6. Stats cards update on next refresh (every 10 seconds)
+
+**More simulated failure types:**
+
+```bash
+# Test failure
+curl -X POST http://localhost:8080/api/webhooks/github \
+  -H "Content-Type: application/json" \
+  -H "X-GitHub-Event: workflow_run" \
+  -d '{"action":"completed","workflow_run":{"id":100,"name":"Tests","status":"completed","conclusion":"failure","head_branch":"develop","head_sha":"def456","created_at":"2026-01-01T10:00:00Z","updated_at":"2026-01-01T10:05:00Z","repository":{"full_name":"org/payment-svc","html_url":"https://github.com/org/payment-svc"}},"repository":{"full_name":"org/payment-svc","html_url":"https://github.com/org/payment-svc"},"rawLogs":"[ERROR] Tests run: 15, Failures: 3, Errors: 1, Skipped: 0\n[INFO] BUILD FAILURE"}'
+
+# Docker build failure
+curl -X POST http://localhost:8080/api/webhooks/github \
+  -H "Content-Type: application/json" \
+  -H "X-GitHub-Event: workflow_run" \
+  -d '{"action":"completed","workflow_run":{"id":200,"name":"Docker Build","status":"completed","conclusion":"failure","head_branch":"release/v2","head_sha":"789abc","created_at":"2026-01-01T10:00:00Z","updated_at":"2026-01-01T10:05:00Z","repository":{"full_name":"org/api-gw","html_url":"https://github.com/org/api-gw"}},"repository":{"full_name":"org/api-gw","html_url":"https://github.com/org/api-gw"},"rawLogs":"COPY failed: no source files were specified\nDockerfile error at line 5"}'
+```
 
 ---
 
@@ -428,6 +461,14 @@ export ANTHROPIC_API_KEY=sk-ant-your-key-here  # Mac/Linux
 
 Get your API key at: https://console.anthropic.com/settings/keys
 
+### LLM returns "400 Bad Request" / "credit balance too low"
+Your Anthropic account needs credits. Go to https://console.anthropic.com/settings/billing to purchase credits. In the meantime, use demo mode:
+```bash
+set HEALING_DEMO_MODE=true   # Windows
+export HEALING_DEMO_MODE=true  # Mac/Linux
+```
+Demo mode uses smart regex-based log analysis as a fallback — it still produces categorized failures, confidence scores, and fix recommendations.
+
 ---
 
 ## 15. Environment Variables
@@ -446,6 +487,8 @@ Get your API key at: https://console.anthropic.com/settings/keys
 | `KAFKA_BOOTSTRAP_SERVERS` | localhost:9092 | Kafka broker address |
 | `HEALING_CONFIDENCE_THRESHOLD` | 0.75 | Minimum confidence to auto-apply/approve |
 | `HEALING_AUTO_APPLY` | false | Auto-apply fixes without human approval |
+| `HEALING_DEMO_MODE` | false | Use smart log analysis instead of Claude API |
+| `ANTHROPIC_MODEL` | claude-3-5-sonnet-20241022 | Claude model to use for fix generation |
 
 ---
 
@@ -471,9 +514,9 @@ cd infraflow-dashboard-ui && npm install && npm run dev
 # 5. Open dashboard
 # http://localhost:3000
 
-# 6. Simulate a failure
-curl -X POST http://localhost:8081/api/webhooks/github \
+# 6. Simulate a compilation failure
+curl -X POST http://localhost:8080/api/webhooks/github \
   -H "Content-Type: application/json" \
   -H "X-GitHub-Event: workflow_run" \
-  -d '{"action":"completed","workflow_run":{"id":1,"name":"CI","head_branch":"main","head_sha":"abc123","status":"completed","conclusion":"failure","html_url":"https://github.com/org/repo/actions/runs/1","repository":{"full_name":"org/repo","html_url":"https://github.com/org/repo"},"head_commit":{"message":"test"}},"repository":{"full_name":"org/repo","html_url":"https://github.com/org/repo"}}'
+  -d '{"action":"completed","workflow_run":{"id":1,"name":"CI Build","status":"completed","conclusion":"failure","head_branch":"main","head_sha":"abc123","created_at":"2026-01-01T10:00:00Z","updated_at":"2026-01-01T10:05:00Z","repository":{"full_name":"org/repo","html_url":"https://github.com/org/repo"}},"repository":{"full_name":"org/repo","html_url":"https://github.com/org/repo"},"rawLogs":"[ERROR] COMPILATION ERROR\n[ERROR] error: cannot find symbol\n  symbol: method getUserById(Long id)\n  location: class UserRepository\n[INFO] BUILD FAILURE"}'
 ```
