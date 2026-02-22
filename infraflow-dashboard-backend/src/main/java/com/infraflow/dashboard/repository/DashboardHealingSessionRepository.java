@@ -13,6 +13,6 @@ public interface DashboardHealingSessionRepository extends JpaRepository<Healing
 
     long countByStatus(HealingStatus status);
 
-    @Query("SELECT AVG(EXTRACT(EPOCH FROM (h.resolvedAt - h.createdAt))) FROM HealingSession h WHERE h.resolvedAt IS NOT NULL")
+    @Query(value = "SELECT AVG(EXTRACT(EPOCH FROM (resolved_at - created_at))) FROM healing_sessions WHERE resolved_at IS NOT NULL", nativeQuery = true)
     Double findAverageMTTR();
 }
