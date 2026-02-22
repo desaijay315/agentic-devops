@@ -19,8 +19,15 @@
 11. [Step 9: Connect Real GitHub Webhooks](#11-step-9-connect-real-github-webhooks)
 12. [API Reference](#12-api-reference)
 13. [Admin UIs](#13-admin-uis)
-14. [Troubleshooting](#14-troubleshooting)
-15. [Environment Variables](#15-environment-variables)
+14. [**Production Operations — Where to Look & How to Resolve**](#14-production-operations--where-to-look--how-to-resolve)
+    - [14.1 Data Flow Tracing](#141-data-flow-tracing--how-a-webhook-becomes-a-healing-session)
+    - [14.2 Key Database Queries](#142-key-database-queries-via-pgadmin-or-psql)
+    - [14.3 Service Health Checks](#143-service-health-checks)
+    - [14.4 Common Production Issues & Resolution](#144-common-production-issues--resolution)
+    - [14.5 Log Locations](#145-log-locations)
+    - [14.6 Key Log Messages to Search For](#146-key-log-messages-to-search-for)
+15. [Troubleshooting (Quick Reference)](#15-troubleshooting)
+16. [Environment Variables](#16-environment-variables)
 
 ---
 
@@ -417,7 +424,187 @@ Push this to your repo → GitHub Actions fails → Webhook fires → InfraFlow 
 
 ---
 
-## 14. Troubleshooting
+## 14. Production Operations — Where to Look & How to Resolve
+
+### 14.1 Data Flow Tracing — How a Webhook Becomes a Healing Session
+
+When something goes wrong, you need to trace the event through the system. Here's the exact path with **what to check at each step**:
+
+```
+WEBHOOK IN ──► NORMALIZER ──► KAFKA ──► HEALING ENGINE ──► DB ──► DASHBOARD ──► WEBSOCKET ──► UI
+     1              2            3            4              5          6             7          8
+```
+
+**Step 1: Webhook received?**
+```bash
+# Check normalizer logs — look for "Published pipeline event"
+curl http://localhost:8081/actuator/health
+# Or check gateway logs if going through :8080
+```
+If webhook returns non-200: Check normalizer is registered in Eureka (http://localhost:8761).
+
+**Step 2: Normalizer processing?**
+| Symptom | Cause | Fix |
+|---------|-------|-----|
+| Returns 200 but no event in Kafka | Missing `status: "completed"` in webhook payload | Add `"status": "completed"` to `workflow_run` |
+| Returns 200 but healing skipped | Status mapped to `QUEUED` not `FAILED` | Ensure `conclusion: "failure"` is in payload |
+| Returns 500 | JSON parsing error | Check `workflow_run` node exists in payload |
+
+**Step 3: Event in Kafka?**
+```bash
+# Open Kafka UI at http://localhost:9080
+# Navigate to Topics → pipeline.events.raw → Messages
+# You should see the normalized event JSON with repoName, status, rawLogs
+```
+If topic is empty: Normalizer couldn't publish. Check Kafka is running (`docker compose ps kafka`).
+
+**Step 4: Healing Engine consumed the event?**
+```bash
+# Check healing engine logs for:
+# "Consumed pipeline event: repo=xxx, status=FAILED"
+# "FAILED pipeline detected — initiating healing"
+# "Persisted pipeline event: id=xxx"
+# "Classified failure as: BUILD_COMPILE"
+# "Calling Claude API for BUILD_COMPILE failure with model=claude-3-5-sonnet-20241022"
+```
+| Log Message | Meaning |
+|-------------|---------|
+| `Consumed ... status=QUEUED` | Webhook missing `status: "completed"` — event is skipped |
+| `Consumed ... status=FAILED` + `FAILED pipeline detected` | Working correctly — healing initiated |
+| `Classified failure as: UNKNOWN` | Logs don't match any pattern — rawLogs may be empty |
+| `Calling Claude API` | API call is being made |
+| `Claude API call failed` | API error — check key/credits |
+| `Demo mode enabled` | Using regex fallback instead of Claude |
+
+**Step 5: Data persisted in PostgreSQL?**
+```bash
+# Quick check via API
+curl http://localhost:8083/api/dashboard/pipeline-events
+curl http://localhost:8083/api/dashboard/healing-sessions
+
+# Or use PgAdmin (http://localhost:5050)
+# Connect: host.docker.internal:5432, db=infraflow, user=infraflow, pass=infraflow123
+# Key tables:
+#   pipeline_events — every webhook event
+#   healing_sessions — every healing attempt (linked to pipeline_event)
+#   fix_audit_log — every action taken (FAILURE_DETECTED, CLASSIFIED, FIX_GENERATED, etc.)
+```
+
+**Step 6-8: Dashboard and WebSocket?**
+```bash
+# Test REST API directly
+curl http://localhost:8083/api/dashboard/stats
+# If returns 500: Check PostgreSQL connection, check DashboardService for LazyInitializationException
+
+# Test WebSocket
+# Open browser console on localhost:3000 and check for "Connected" in the UI
+# If "Disconnected": Dashboard Backend (:8083) is down or not registered in Eureka
+```
+
+### 14.2 Key Database Queries (via PgAdmin or psql)
+
+```sql
+-- See all pipeline events with status
+SELECT id, repo_name, branch, status, failure_type, workflow_name, created_at
+FROM pipeline_events ORDER BY created_at DESC LIMIT 20;
+
+-- See healing sessions with AI diagnosis
+SELECT hs.id, pe.repo_name, hs.failure_type, hs.status, hs.confidence_score,
+       hs.failure_summary, hs.fix_explanation, hs.created_at
+FROM healing_sessions hs
+JOIN pipeline_events pe ON hs.pipeline_event_id = pe.id
+ORDER BY hs.created_at DESC LIMIT 20;
+
+-- See audit trail for a specific session
+SELECT action, actor, notes, created_at
+FROM fix_audit_log
+WHERE healing_session_id = <session_id>
+ORDER BY created_at;
+
+-- Count failures by type
+SELECT failure_type, COUNT(*) as count
+FROM healing_sessions
+GROUP BY failure_type ORDER BY count DESC;
+
+-- Average confidence by failure type
+SELECT failure_type, AVG(confidence_score) as avg_confidence, COUNT(*) as total
+FROM healing_sessions
+WHERE confidence_score > 0
+GROUP BY failure_type;
+```
+
+### 14.3 Service Health Checks
+
+```bash
+# Quick health check for all services
+curl -s http://localhost:8761/eureka/apps | grep '<app>' # Eureka registered services
+curl -s http://localhost:8080/actuator/health            # API Gateway
+curl -s http://localhost:8081/actuator/health            # Event Normalizer
+curl -s http://localhost:8082/actuator/health            # Healing Engine
+curl -s http://localhost:8083/actuator/health            # Dashboard Backend
+
+# Check all ports at once (Windows)
+netstat -ano | findstr "8761 8080 8081 8082 8083 3000 5432 9092"
+
+# Docker infrastructure
+docker compose ps
+docker exec infraflow-postgres pg_isready -U infraflow
+docker exec infraflow-kafka kafka-topics --bootstrap-server localhost:9092 --list
+```
+
+### 14.4 Common Production Issues & Resolution
+
+| Issue | Where to Look | Resolution |
+|-------|---------------|------------|
+| **Webhook accepted but no healing** | Normalizer logs, Kafka UI (pipeline.events.raw) | Ensure `status: "completed"` in webhook payload |
+| **Healing session stuck on ANALYZING** | Healing engine logs | Claude API call may be hanging — check network/API key |
+| **All sessions show ESCALATED with 0% confidence** | `.env` file, Anthropic billing | API key has no credits — use demo mode or add credits |
+| **Dashboard returns 500** | Dashboard backend logs | Likely `LazyInitializationException` — ensure `@Transactional(readOnly=true)` on DashboardService |
+| **WebSocket disconnects on page nav** | Browser console | Ensure using Next.js `<Link>` not `<a>` tags (avoids full reload) |
+| **Kafka UI empty** | `docker compose ps kafka` | Restart with `docker compose up -d kafka kafka-ui --force-recreate` |
+| **Events not appearing in real-time** | WebSocket connection indicator | Check Dashboard Backend is consuming from Kafka — look for `DashboardEventConsumer` in logs |
+| **Port conflict on startup** | `netstat -ano \| findstr :PORT` | Kill the PID using `taskkill /F /PID <pid>` (Windows) or `kill -9 <pid>` (Mac/Linux) |
+| **Flyway migration error** | Healing engine startup logs | DB schema was manually modified — run `DELETE FROM flyway_schema_history WHERE success=false` |
+| **Gateway returns 503** | Eureka dashboard (http://localhost:8761) | Target service not registered yet — wait 30s for Eureka sync, or restart service |
+| **rawLogs empty / generic analysis** | Kafka UI → check message content | Webhook payload missing `rawLogs` field — add CI build output to webhook body |
+
+### 14.5 Log Locations
+
+| Service | How to View Logs |
+|---------|-----------------|
+| Event Normalizer | Terminal where `mvn spring-boot:run` was started, or `java -jar` stdout |
+| Healing Engine | Terminal stdout — look for `PipelineEventConsumer`, `HealingService`, `ClaudeHealingAdapter` |
+| Dashboard Backend | Terminal stdout — look for `DashboardEventConsumer` |
+| API Gateway | Terminal stdout — shows routing decisions |
+| PostgreSQL | `docker logs infraflow-postgres` |
+| Kafka | `docker logs infraflow-kafka` |
+| Next.js Frontend | Terminal where `npm run dev` runs, plus browser console (F12) |
+
+### 14.6 Key Log Messages to Search For
+
+```bash
+# Healing Engine — successful flow
+"Consumed pipeline event"           # Event received from Kafka
+"FAILED pipeline detected"          # Healing initiated
+"Persisted pipeline event: id="     # Saved to DB
+"Classified failure as:"            # Failure type detected
+"Calling Claude API"                # LLM call starting
+"Demo mode enabled"                 # Using fallback analysis
+"Claude API call failed"            # LLM error — check API key/credits
+
+# Dashboard Backend
+"Forwarded to WebSocket"            # Event pushed to frontend
+"DashboardEventConsumer"            # Kafka consumer processing
+
+# Normalizer
+"Published pipeline event"          # Successfully sent to Kafka
+"Included * chars of raw logs"      # rawLogs being forwarded
+"No workflow_run in payload"        # Invalid webhook format
+```
+
+---
+
+## 15. Troubleshooting (Quick Reference)
 
 ### "Connection refused" on startup
 Services depend on infrastructure. Start order matters:
@@ -471,7 +658,7 @@ Demo mode uses smart regex-based log analysis as a fallback — it still produce
 
 ---
 
-## 15. Environment Variables
+## 16. Environment Variables
 
 | Variable | Default | Description |
 |----------|---------|-------------|
